@@ -107,9 +107,9 @@ class GPT():
         Y2, self.stdev_Y2, self.gamma_Y2, self.avg_Y2 = self.layernorm(residue=mha_residue, alpha=MHA_alpha, beta=MHA_beta)
 
         # cross attention
-        MHA_cross = self.cross_attention(Z=Y2, O=X_output, WQ=WQ, WK=WK, WV=WV) @ self.WyZ
+        self.MHA_cross = self.cross_attention(Z=Y2, O=X_output, WQ=WQ, WK=WK, WV=WV) @ self.WyZ
         # add + layernorm
-        self.OF_residue = MHA_cross + Y2
+        self.OF_residue = self.MHA_cross + Y2
         self.Y3, self.stdev_Y3, self.gamma_Y3, self.avg_Y3 = self.layernorm(residue=self.OF_residue, alpha=self.mha_cross_alpha, beta=self.mha_cross_beta)
         # feed-forward
         FFNy = self.ffn(self.Y3, W1=self.WYf1, W2=self.WYf2, B1=self.BYf1 , B2=self.BYf2)
@@ -147,6 +147,34 @@ class GPT():
         dW1 = X.T @ dh    # d_in,n x n,d_hid --> d_in,d_hid
         dX = dh @ W1.T    # n,d_hid x d_in,d_hid --> n,d_in
         return dW2, db2, dW1, db1, dX
+
+    def deriv_softmax(self, dZ, Z):
+        term = np.sum(dZ * Z, axis=1, keepdims=True)
+        return Z * (dZ - term)
+    
+    def deriv_cross_mha(self, dY, X:np.ndarray, O:np.ndarray, Wq, Wk, Wv):
+        dY = np.reshape(dY, (len(dY), self.head_size, self.dk))
+        dY = np.transpose(dY, (1, 0, 2))
+        dWq, dWk, dWv = [], [], []
+        for head in range(self.head_size):
+            Qx = X @ Wq[head]
+            Kx = O @ Wk[head]
+            Vx = O @ Wv[head]
+            Z = self.softmax((Qx @ Kx.T) / np.sqrt(self.dk))
+            dWv_head = (Z @ O).T @ dY[head]
+            dmha_dZ = dY[head] @ (Vx).T # n,d x d,dk --> n,dk x dk,n --> n,n
+            dZ_dx = self.deriv_softmax(dZ=dmha_dZ, Z=Z) / np.sqrt(self.dk)  # n,n
+            dWk_head = (dZ_dx @ O).T @ Qx
+            dWq_head = X.T @ (dZ_dx @ Kx)
+            dWq.append(dWq_head)
+            dWk.append(dWk_head)
+            dWv.append(dWv_head)
+            '''
+            dOt_head = dZ_dx @ ((Qx @ Wk[head].T) / np.sqrt(self.dk))
+            dY2_head = dZ_dx @ ((Kx @ Wq[head].T) / np.sqrt(self.dk))
+            dOt2 = (Z @ dY[head]) @ Wv[head].T
+            '''
+        return dWq, dWk, dWv #, dOt, dY2
     
     def backward(self): 
         d_logits = self.avg_dim * (self.prediction - np.eye(self.vocab_size)[self.Y])   # n,v
@@ -156,6 +184,9 @@ class GPT():
         dzi_OF = self.deriv_layernorm(X=self.final_residue, dY=dY_out, stdev=self.stdev_OF, gamma=self.gamma_OF, alpha=self.Of_alpha, mu=self.avg_OF, avg_d=self.avg_dim)   # n,d
         dW2_y3, db2_y3, dW1_y3, db1_y3, dY3 = self.deriv_FFN(dY=dzi_OF, X=self.Y3, W1=self.WYf1, b1=self.BYf1, W2=self.BYf2)
         dY3 += dzi_OF # this is due to the residual connection (Y3 + FFN) whose derivative was 1 w.r.t Y3 itself. Therefore adding both paths together gives (1+dFFN)*dY = dY + dFFN where dY = dzi_OF
-        
-        return dW_out, dB_out, dzi_OF, dW1_y3, dW2_y3, db1_y3,db2_y3
+        dzi_Y3 = self.deriv_layernorm(X=self.OF_residue, dY=dY3, stdev=self.stdev_Y3, gamma=self.gamma_Y3, alpha=self.mha_cross_alpha, mu=self.avg_Y3, avg_d=self.avg_dim)   # n,d
+        dWYz = self.MHA_cross
+        dWq, dWk, dWv, dX, dY2 = self.deriv_cross_mha()
+        dY2 += dY3
+        return dW_out, dB_out, dzi_OF, dW1_y3, dW2_y3, db1_y3, db2_y3
         
