@@ -1,12 +1,13 @@
 import numpy as np
 
-class GPT():
-    def __init__(self, dim, head_size, vocab_size, X, Y):
+class numpy_GPT():
+    def __init__(self, dim, head_size, vocab_size, X, Y, lr):
         if dim % head_size != 0:
             raise ValueError("Please keep dim size perfectly divisible by the head_size")
         #tokenized datasets (int, int....)
         self.X = X
         self.Y = Y
+        self.learning_rate=lr
         # hyperparams
         self.vocab_size = vocab_size
         self.head_size = head_size  # number of heads
@@ -240,7 +241,8 @@ class GPT():
         np.add.at(self.dembed_x, self.X, dX1 / np.sqrt(self.inner_dim))
         return self
     
-    def learn(self, lr=1e-3):
+    def learn(self):
+        lr = self.learning_rate
         # Output Layer updates
         self.W_out -= lr * self.dW_out
         self.B_out -= lr * self.dB_out
