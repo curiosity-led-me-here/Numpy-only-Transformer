@@ -208,36 +208,117 @@ class GPT():
     def backward(self): 
         d_logits = self.avg_dim * (self.prediction - np.eye(self.vocab_size)[self.Y])   # n,v
         dY_out = d_logits @ self.W_out.T    # n,v * v,d --> n,d
-        dW_out = self.Y_output.T @ d_logits     # d,n x n,v --> d,v
-        dB_out = np.sum(d_logits, axis=0, keepdims=True)    # n,v --> n,1
-        dzi_OF, dalpha_OF, dbeta_OF = self.deriv_layernorm(X=self.final_residue, dY=dY_out, stdev=self.stdev_OF, gamma=self.gamma_OF, alpha=self.Of_alpha, mu=self.avg_OF, avg_d=self.avg_dim)   # n,d
-        dW2_y3, db2_y3, dW1_y3, db1_y3, dY3 = self.deriv_FFN(dY=dzi_OF, X=self.Y3, W1=self.WYf1, b1=self.BYf1, W2=self.WYf2)
-        dY3 += dzi_OF # this is due to the residual connection (Y3 + FFN) whose derivative was 1 w.r.t Y3 itself. Therefore adding both paths together gives (1+dFFN)*dY = dY + dFFN where dY = dzi_OF
-        dzi_Y3, dalpha_Y3, dbeta_Y3 = self.deriv_layernorm(X=self.OF_residue, dY=dY3, stdev=self.stdev_Y3, gamma=self.gamma_Y3, alpha=self.mha_cross_alpha, mu=self.avg_Y3, avg_d=self.avg_dim)   # n,d
-        dWYz = self.MHA_cross_concat.T @ dzi_Y3
+        self.dW_out = self.Y_output.T @ d_logits     # d,n x n,v --> d,v
+        self.dB_out = np.sum(d_logits, axis=0, keepdims=True)    # n,v --> n,1
+        self.dzi_OF, self.dalpha_OF, self.dbeta_OF = self.deriv_layernorm(X=self.final_residue, dY=dY_out, stdev=self.stdev_OF, gamma=self.gamma_OF, alpha=self.Of_alpha, mu=self.avg_OF, avg_d=self.avg_dim)   # n,d
+        self.dW2_y3, self.db2_y3, self.dW1_y3, self.db1_y3, dY3 = self.deriv_FFN(dY=self.dzi_OF, X=self.Y3, W1=self.WYf1, b1=self.BYf1, W2=self.WYf2)
+        dY3 += self.dzi_OF # this is due to the residual connection (Y3 + FFN) whose derivative was 1 w.r.t Y3 itself. Therefore adding both paths together gives (1+dFFN)*dY = dY + dFFN where dY = dzi_OF
+        dzi_Y3, self.dalpha_Y3, self.dbeta_Y3 = self.deriv_layernorm(X=self.OF_residue, dY=dY3, stdev=self.stdev_Y3, gamma=self.gamma_Y3, alpha=self.mha_cross_alpha, mu=self.avg_Y3, avg_d=self.avg_dim)   # n,d
+        self.dWYz = self.MHA_cross_concat.T @ dzi_Y3
         dY_cross = dzi_Y3 @ self.WyZ.T
-        dWq_cross, dWk_cross, dWv_cross, dY2, dX = self.deriv_cross_mha(dY=dY_cross, X=self.Y2, O=self.X_output, Wq=self.WyQ, Wk=self.WyK, Wv=self.WyV)
+        self.dWq_cross, self.dWk_cross, self.dWv_cross, dY2, dX = self.deriv_cross_mha(dY=dY_cross, X=self.Y2, O=self.X_output, Wq=self.WyQ, Wk=self.WyK, Wv=self.WyV)
         dY2 += dzi_Y3
 
         # PATH 1: Y2 --> encoder inception
-        dyi_Y1, dalpha_Y1, dbeta_Y1 = self.deriv_layernorm(X=self.mha_residue_y, dY=dY2, stdev=self.stdev_Y2, gamma=self.gamma_Y2, alpha=self.mha_alpha_y, mu=self.avg_Ot, avg_d=self.avg_dim)   # n,d 
-        dWyZ = self.MHAy_concat.T @ dyi_Y1
+        dyi_Y1, self.dalpha_Y1, self.dbeta_Y1 = self.deriv_layernorm(X=self.mha_residue_y, dY=dY2, stdev=self.stdev_Y2, gamma=self.gamma_Y2, alpha=self.mha_alpha_y, mu=self.avg_Ot, avg_d=self.avg_dim)   # n,d 
+        self.dWyZ = self.MHAy_concat.T @ dyi_Y1
         dY_mha = dyi_Y1 @ self.WYZ.T
-        dWq_mhay, dWk_mhay, dWv_mhay ,dY1 = self.deriv_mha(dY=dY_mha, X=self.Zy, Wq=self.WyQ, Wk=self.WyK, Wv=self.WyV)
+        self.dWq_mhay, self.dWk_mhay, self.dWv_mhay ,dY1 = self.deriv_mha(dY=dY_mha, X=self.Zy, Wq=self.WyQ, Wk=self.WyK, Wv=self.WyV)
         dY1 += dyi_Y1
-        dembed_y = np.zeros_like(self.embed)
-        np.add.at(dembed_y, self.Y, dY1 / np.sqrt(self.inner_dim))
+        self.dembed_y = np.zeros_like(self.embed)
+        np.add.at(self.dembed_y, self.Y, dY1 / np.sqrt(self.inner_dim))
 
         # PATH 2: dX --> decoder inception
-        dzi_Ot, dalpha_Ot, dbeta_Ot = self.deriv_layernorm(X=self.ffn_residue, dY=dX, stdev=self.stdev_Ot, gamma=self.gamma_Ot, alpha=self.Ot_alpha, mu=self.avg_Ot, avg_d=self.avg_dim)   # n,d 
-        dW2_x3, db2_x3, dW1_x3, db1_x3, dX3 = self.deriv_FFN(dY=dzi_Ot, X=self.LNx, W1=self.WXf1, b1=self.BXf1, W2=self.WXf2)
+        dzi_Ot, self.dalpha_Ot, self.dbeta_Ot = self.deriv_layernorm(X=self.ffn_residue, dY=dX, stdev=self.stdev_Ot, gamma=self.gamma_Ot, alpha=self.Ot_alpha, mu=self.avg_Ot, avg_d=self.avg_dim)   # n,d 
+        self.dW2_x3, self.db2_x3, self.dW1_x3, self.db1_x3, dX3 = self.deriv_FFN(dY=dzi_Ot, X=self.LNx, W1=self.WXf1, b1=self.BXf1, W2=self.WXf2)
         dX3 += dzi_Ot
-        dX2, dalpha_X2, dbeta_X2 = self.deriv_layernorm(X=self.mha_residue_x, dY=dX3, stdev=self.stdev_X, gamma=self.gamma_X, alpha=self.MHA_alpha, beta=self.MHA_beta, mu=self.avg_X, avg_d=self.avg_dim)
-        dWXz = self.MHAx_concat.T @ dX2
+        dX2, self.dalpha_X2, self.dbeta_X2 = self.deriv_layernorm(X=self.mha_residue_x, dY=dX3, stdev=self.stdev_X, gamma=self.gamma_X, alpha=self.MHA_alpha, beta=self.MHA_beta, mu=self.avg_X, avg_d=self.avg_dim)
+        self.dWXz = self.MHAx_concat.T @ dX2
         dX_mha = dX2 @ self.WxZ
-        dWq_mhax, dWk_mhax, dWv_mhax, dX1 = self.deriv_mha(dY=dX_mha, X=self.Zx, Wq=self.WxQ, Wk=self.WxK, Wv=self.WxV)
+        self.dWq_mhax, self.dWk_mhax, self.dWv_mhax, dX1 = self.deriv_mha(dY=dX_mha, X=self.Zx, Wq=self.WxQ, Wk=self.WxK, Wv=self.WxV)
         dX1 += dX2
-        dembed_x = np.zeros_like(self.embed)
-        np.add.at(dembed_x, self.X, dX1 / np.sqrt(self.inner_dim))
-        return dW_out, dB_out, dzi_OF, dW1_y3, dW2_y3, db1_y3, db2_y3, dWq_cross, dWk_cross, dWv_cross, dWYz, dalpha_OF, dbeta_OF, dalpha_Y3, dbeta_Y3, dalpha_Ot, dbeta_Ot, dW2_x3, db2_x3, dW1_x3, db1_x3, dalpha_X2, dbeta_X2, dWXz, dalpha_Y1, dbeta_Y1, dWyZ, dembed_x, dembed_y, dWq_mhax, dWk_mhax, dWv_mhax, dWq_mhay, dWk_mhay, dWv_mhay
+        self.dembed_x = np.zeros_like(self.embed)
+        np.add.at(self.dembed_x, self.X, dX1 / np.sqrt(self.inner_dim))
+        return self.dW_out, self.dB_out, self.dzi_OF, self.dW1_y3, self.dW2_y3, self.db1_y3, self.db2_y3, self.dWq_cross, self.dWk_cross, self.dWv_cross, self.dWYz, self.dalpha_OF, self.dbeta_OF, self.dalpha_Y3, self.dbeta_Y3, self.dalpha_Ot, self.dbeta_Ot, self.dW2_x3, self.db2_x3, self.dW1_x3, self.db1_x3, self.dalpha_X2, self.dbeta_X2, self.dWXz, self.dalpha_Y1, self.dbeta_Y1, self.dWyZ, self.dembed_x, self.dembed_y, self.dWq_mhax, self.dWk_mhax, self.dWv_mhax, self.dWq_mhay, self.dWk_mhay, self.dWv_mhay
         
+    def backward(self): 
+        d_logits = self.avg_dim * (self.prediction - np.eye(self.vocab_size)[self.Y])   # n,v
+        dY_out = d_logits @ self.W_out.T    # n,v * v,d --> n,d
+        self.dW_out = self.Y_output.T @ d_logits     # d,n x n,v --> d,v
+        self.dB_out = np.sum(d_logits, axis=0, keepdims=True)    # n,v --> n,1
+        self.dzi_OF, self.dalpha_OF, self.dbeta_OF = self.deriv_layernorm(X=self.final_residue, dY=dY_out, stdev=self.stdev_OF, gamma=self.gamma_OF, alpha=self.Of_alpha, mu=self.avg_OF, avg_d=self.avg_dim)   # n,d
+        self.dW2_y3, self.db2_y3, self.dW1_y3, self.db1_y3, dY3 = self.deriv_FFN(dY=self.dzi_OF, X=self.Y3, W1=self.WYf1, b1=self.BYf1, W2=self.WYf2)
+        dY3 += self.dzi_OF # this is due to the residual connection (Y3 + FFN) whose derivative was 1 w.r.t Y3 itself. Therefore adding both paths together gives (1+dFFN)*dY = dY + dFFN where dY = dzi_OF
+        self.dzi_Y3, self.dalpha_Y3, self.dbeta_Y3 = self.deriv_layernorm(X=self.OF_residue, dY=dY3, stdev=self.stdev_Y3, gamma=self.gamma_Y3, alpha=self.mha_cross_alpha, mu=self.avg_Y3, avg_d=self.avg_dim)   # n,d
+        self.dWYz = self.MHA_cross_concat.T @ self.dzi_Y3
+        dY_cross = self.dzi_Y3 @ self.WyZ.T
+        self.dWq_cross, self.dWk_cross, self.dWv_cross, dY2, dX = self.deriv_cross_mha(dY=dY_cross, X=self.Y2, O=self.X_output, Wq=self.WyQ, Wk=self.WyK, Wv=self.WyV)
+        dY2 += self.dzi_Y3
+
+        # PATH 1: Y2 --> encoder inception
+        dyi_Y1, self.dalpha_Y1, self.dbeta_Y1 = self.deriv_layernorm(X=self.mha_residue_y, dY=dY2, stdev=self.stdev_Y2, gamma=self.gamma_Y2, alpha=self.mha_alpha_y, mu=self.avg_Y2, avg_d=self.avg_dim)   # n,d 
+        self.dWyZ = self.MHAy_concat.T @ dyi_Y1
+        dY_mha = dyi_Y1 @ self.WYZ.T
+        self.dWq_mhay, self.dWk_mhay, self.dWv_mhay ,dY1 = self.deriv_mha(dY=dY_mha, X=self.Zy, Wq=self.WyQ, Wk=self.WyK, Wv=self.WyV)
+        dY1 += dyi_Y1
+        self.dembed_y = np.zeros_like(self.embed)
+        np.add.at(self.dembed_y, self.Y, dY1 / np.sqrt(self.inner_dim))
+
+        # PATH 2: dX --> decoder inception
+        self.dzi_Ot, self.dalpha_Ot, self.dbeta_Ot = self.deriv_layernorm(X=self.ffn_residue, dY=dX, stdev=self.stdev_Ot, gamma=self.gamma_Ot, alpha=self.Ot_alpha, mu=self.avg_Ot, avg_d=self.avg_dim)   # n,d 
+        self.dW2_x3, self.db2_x3, self.dW1_x3, self.db1_x3, dX3 = self.deriv_FFN(dY=self.dzi_Ot, X=self.LNx, W1=self.WXf1, b1=self.BXf1, W2=self.WXf2)
+        dX3 += self.dzi_Ot
+        self.dX2, self.dalpha_X2, self.dbeta_X2 = self.deriv_layernorm(X=self.mha_residue_x, dY=dX3, stdev=self.stdev_X, gamma=self.gamma_X, alpha=self.MHA_alpha, mu=self.avg_X, avg_d=self.avg_dim)
+        self.dWXz = self.MHAx_concat.T @ self.dX2
+        dX_mha = self.dX2 @ self.WxZ.T
+        self.dWq_mhax, self.dWk_mhax, self.dWv_mhax, dX1 = self.deriv_mha(dY=dX_mha, X=self.Zx, Wq=self.WxQ, Wk=self.WxK, Wv=self.WxV)
+        dX1 += self.dX2
+        self.dembed_x = np.zeros_like(self.embed)
+        np.add.at(self.dembed_x, self.X, dX1 / np.sqrt(self.inner_dim))
+        return self
+    
+    def learn(self, lr=1e-3):
+        # Output Layer updates
+        self.W_out -= lr * self.dW_out
+        self.B_out -= lr * self.dB_out
+        # Decoder FFN updates
+        self.WYf1 -= lr * self.dW1_y3
+        self.WYf2 -= lr * self.dW2_y3
+        self.BYf1 -= lr * self.db1_y3
+        self.BYf2 -= lr * self.db2_y3
+        # Encoder FFN updates
+        self.WXf1 -= lr * self.dW1_x3
+        self.WXf2 -= lr * self.dW2_x3
+        self.BXf1 -= lr * self.db1_x3
+        self.BXf2 -= lr * self.db2_x3
+        # Attention Output Projection updates
+        self.WyZ -= lr * self.dWYz
+        self.WxZ -= lr * self.dWXz
+        self.WYZ -= lr * self.dWyZ
+        # Combined Input Embedding Updates
+        self.embed -= lr * (self.dembed_x + self.dembed_y)
+        # Loop and Update Multi-Head Weights
+        for head in range(self.head_size):
+            # Cross Attention Block
+            self.WyQ[head] -= lr * self.dWq_cross[head]
+            self.WyK[head] -= lr * self.dWk_cross[head]
+            self.WyV[head] -= lr * self.dWv_cross[head]
+            # Decoder Self Attention Block
+            self.WyQ[head] -= lr * self.dWq_mhay[head]
+            self.WyK[head] -= lr * self.dWk_mhay[head]
+            self.WyV[head] -= lr * self.dWv_mhay[head]
+            # Encoder Self Attention Block
+            self.WxQ[head] -= lr * self.dWq_mhax[head]
+            self.WxK[head] -= lr * self.dWk_mhax[head]
+            self.WxV[head] -= lr * self.dWv_mhax[head]
+        # LayerNorm Parameter updates
+        self.Of_alpha -= lr * self.dalpha_OF
+        self.Of_beta -= lr * self.dbeta_OF
+        self.mha_cross_alpha -= lr * self.dalpha_Y3
+        self.mha_cross_beta -= lr * self.dbeta_Y3
+        self.mha_alpha_y -= lr * self.dalpha_Y1
+        self.mha_beta_y -= lr * self.dbeta_Y1
+        self.Ot_alpha -= lr * self.dalpha_Ot
+        self.Ot_beta -= lr * self.dbeta_Ot
+        self.MHA_alpha -= lr * self.dalpha_X2
+        self.MHA_beta -= lr * self.dbeta_X2
