@@ -203,43 +203,6 @@ class GPT():
             dWv.append(X.T @ dV)
             dX_total += (dQ @ Wq[head].T) + (dK @ Wk[head].T) + (dV @ Wv[head].T)                # (n, dk) @ (dk, d) --> (n, d)
         return dWq, dWk, dWv, dX_total
-
-
-    def backward(self): 
-        d_logits = self.avg_dim * (self.prediction - np.eye(self.vocab_size)[self.Y])   # n,v
-        dY_out = d_logits @ self.W_out.T    # n,v * v,d --> n,d
-        self.dW_out = self.Y_output.T @ d_logits     # d,n x n,v --> d,v
-        self.dB_out = np.sum(d_logits, axis=0, keepdims=True)    # n,v --> n,1
-        self.dzi_OF, self.dalpha_OF, self.dbeta_OF = self.deriv_layernorm(X=self.final_residue, dY=dY_out, stdev=self.stdev_OF, gamma=self.gamma_OF, alpha=self.Of_alpha, mu=self.avg_OF, avg_d=self.avg_dim)   # n,d
-        self.dW2_y3, self.db2_y3, self.dW1_y3, self.db1_y3, dY3 = self.deriv_FFN(dY=self.dzi_OF, X=self.Y3, W1=self.WYf1, b1=self.BYf1, W2=self.WYf2)
-        dY3 += self.dzi_OF # this is due to the residual connection (Y3 + FFN) whose derivative was 1 w.r.t Y3 itself. Therefore adding both paths together gives (1+dFFN)*dY = dY + dFFN where dY = dzi_OF
-        dzi_Y3, self.dalpha_Y3, self.dbeta_Y3 = self.deriv_layernorm(X=self.OF_residue, dY=dY3, stdev=self.stdev_Y3, gamma=self.gamma_Y3, alpha=self.mha_cross_alpha, mu=self.avg_Y3, avg_d=self.avg_dim)   # n,d
-        self.dWYz = self.MHA_cross_concat.T @ dzi_Y3
-        dY_cross = dzi_Y3 @ self.WyZ.T
-        self.dWq_cross, self.dWk_cross, self.dWv_cross, dY2, dX = self.deriv_cross_mha(dY=dY_cross, X=self.Y2, O=self.X_output, Wq=self.WyQ, Wk=self.WyK, Wv=self.WyV)
-        dY2 += dzi_Y3
-
-        # PATH 1: Y2 --> encoder inception
-        dyi_Y1, self.dalpha_Y1, self.dbeta_Y1 = self.deriv_layernorm(X=self.mha_residue_y, dY=dY2, stdev=self.stdev_Y2, gamma=self.gamma_Y2, alpha=self.mha_alpha_y, mu=self.avg_Ot, avg_d=self.avg_dim)   # n,d 
-        self.dWyZ = self.MHAy_concat.T @ dyi_Y1
-        dY_mha = dyi_Y1 @ self.WYZ.T
-        self.dWq_mhay, self.dWk_mhay, self.dWv_mhay ,dY1 = self.deriv_mha(dY=dY_mha, X=self.Zy, Wq=self.WyQ, Wk=self.WyK, Wv=self.WyV)
-        dY1 += dyi_Y1
-        self.dembed_y = np.zeros_like(self.embed)
-        np.add.at(self.dembed_y, self.Y, dY1 / np.sqrt(self.inner_dim))
-
-        # PATH 2: dX --> decoder inception
-        dzi_Ot, self.dalpha_Ot, self.dbeta_Ot = self.deriv_layernorm(X=self.ffn_residue, dY=dX, stdev=self.stdev_Ot, gamma=self.gamma_Ot, alpha=self.Ot_alpha, mu=self.avg_Ot, avg_d=self.avg_dim)   # n,d 
-        self.dW2_x3, self.db2_x3, self.dW1_x3, self.db1_x3, dX3 = self.deriv_FFN(dY=dzi_Ot, X=self.LNx, W1=self.WXf1, b1=self.BXf1, W2=self.WXf2)
-        dX3 += dzi_Ot
-        dX2, self.dalpha_X2, self.dbeta_X2 = self.deriv_layernorm(X=self.mha_residue_x, dY=dX3, stdev=self.stdev_X, gamma=self.gamma_X, alpha=self.MHA_alpha, beta=self.MHA_beta, mu=self.avg_X, avg_d=self.avg_dim)
-        self.dWXz = self.MHAx_concat.T @ dX2
-        dX_mha = dX2 @ self.WxZ
-        self.dWq_mhax, self.dWk_mhax, self.dWv_mhax, dX1 = self.deriv_mha(dY=dX_mha, X=self.Zx, Wq=self.WxQ, Wk=self.WxK, Wv=self.WxV)
-        dX1 += dX2
-        self.dembed_x = np.zeros_like(self.embed)
-        np.add.at(self.dembed_x, self.X, dX1 / np.sqrt(self.inner_dim))
-        return self.dW_out, self.dB_out, self.dzi_OF, self.dW1_y3, self.dW2_y3, self.db1_y3, self.db2_y3, self.dWq_cross, self.dWk_cross, self.dWv_cross, self.dWYz, self.dalpha_OF, self.dbeta_OF, self.dalpha_Y3, self.dbeta_Y3, self.dalpha_Ot, self.dbeta_Ot, self.dW2_x3, self.db2_x3, self.dW1_x3, self.db1_x3, self.dalpha_X2, self.dbeta_X2, self.dWXz, self.dalpha_Y1, self.dbeta_Y1, self.dWyZ, self.dembed_x, self.dembed_y, self.dWq_mhax, self.dWk_mhax, self.dWv_mhax, self.dWq_mhay, self.dWk_mhay, self.dWv_mhay
         
     def backward(self): 
         d_logits = self.avg_dim * (self.prediction - np.eye(self.vocab_size)[self.Y])   # n,v
