@@ -19,7 +19,7 @@ class GPT():
         # pos emb
         self.pos = np.random.randn(len(self.X), dim)
         # layernorm params
-        self.MHA_alpha, self.MHA_beta, self.Ot_alpha, self.Ot_beta, self.mha_cross_alpha, self.mha_cross_beta, self.Of_alpha, self.Of_beta  = np.random.randn(8, 1, self.inner_dim)
+        self.MHA_alpha, self.MHA_beta, self.Ot_alpha, self.Ot_beta, self.mha_cross_alpha, self.mha_cross_beta, self.Of_alpha, self.Of_beta, self.mha_alpha_y, self.mha_beta_y  = np.random.randn(10, 1, self.inner_dim)
         # X-head
         self.WxQ, self.WxK, self.WxV = np.random.randn(3, self.head_size, self.inner_dim, int(self.inner_dim / self.head_size))
         # Y-head
@@ -32,7 +32,7 @@ class GPT():
         '''
         
         # MHA
-        self.WxZ, self.WyZ = np.random.randn(2, self.inner_dim, self.inner_dim)
+        self.WxZ, self.WyZ, self.WYZ = np.random.randn(3, self.inner_dim, self.inner_dim)
         # FFN-X
         self.WXf1, self.WXf2 = np.random.randn(2, self.inner_dim, self.inner_dim)
         self.BXf1, self.BXf2 = np.random.randn(2, 1, self.inner_dim)
@@ -44,29 +44,30 @@ class GPT():
         self.W_out = np.random.randn(self.inner_dim, self.vocab_size)
         self.B_out = np.random.randn(1, self.vocab_size)
 
+
     def positional_encode(self, X):
         pos = np.array([[np.sin(i / 10000 ** ((2 * (Npos // 2)) / self.inner_dim)) if Npos % 2 == 0 else np.cos(i / 10000 ** ((2 * (Npos // 2)) / self.inner_dim)) for Npos in range(self.inner_dim)] for i in range(len(X))])
         return X*np.sqrt(self.inner_dim) + pos
 
     def attention(self, Z, WQ, WK, WV):
-         Zr = []
-         for i in range(self.head_size):
+        Zr = []
+        for i in range(self.head_size):
             Qx = Z @ WQ[i]
             Kx = Z @ WK[i]
             Vx = Z @ WV[i]
             score = self.softmax((Qx @ Kx.T) / np.sqrt(self.dk)) @ Vx
             Zr.append(score)
-         return np.concatenate(Zr, axis=1)
+        return np.concatenate(Zr, axis=1)
     
     def cross_attention(self, Z, O, WQ, WK, WV):
-         Zr = []
-         for i in range(self.head_size):
+        Zr = []
+        for i in range(self.head_size):
             Qx = Z @ WQ[i]
             Kx = O @ WK[i]
             Vx = O @ WV[i]
             score = self.softmax((Qx @ Kx.T) / np.sqrt(self.dk)) @ Vx
             Zr.append(score)
-         return np.concatenate(Zr, axis=1)
+        return np.concatenate(Zr, axis=1)
 
     def softmax(self, x):
         x_max = np.max(x, axis=-1, keepdims=True) 
@@ -84,32 +85,35 @@ class GPT():
         return np.tanh(X @ W1 + B1) @ W2 + B2 
 
     def forward_X(self, X_input, embed, inner_dim, WQ, WK, WV, WZ, MHA_alpha, MHA_beta, Wf1, Wf2, Bf1, Bf2, Ot_alpha, Ot_beta):
-        X = embed[X_input] / np.sqrt(inner_dim) # n x d
+        self.X_inpt = embed[X_input] / np.sqrt(inner_dim) # n x d
         # -- positional encoding
-        Zx = self.positional_encode(X)
+        self.Zx = self.positional_encode(self.X_inpt)
         # -- multi head attention
-        MHAx = self.attention(Zx, WQ, WK, WV) @ WZ
+        self.MHAx_concat = self.attention(self.Zx, WQ, WK, WV) 
+        self.MHAx = self.MHAx_concat @ WZ
         # -- add + layernorm
-        mha_residue = MHAx + X
-        LNx, self.stdev_X, self.gamma_X, self.avg_X = self.layernorm(residue=mha_residue, alpha=MHA_alpha, beta=MHA_beta)
+        self.mha_residue_x = self.MHAx + self.X_inpt
+        self.LNx, self.stdev_X, self.gamma_X, self.avg_X = self.layernorm(residue=self.mha_residue_x, alpha=MHA_alpha, beta=MHA_beta)
         # -- feedforward
-        FFNx = self.ffn(X=LNx, W1=Wf1, W2=Wf2, B1=Bf1, B2=Bf2)
+        FFNx = self.ffn(X=self.LNx, W1=Wf1, W2=Wf2, B1=Bf1, B2=Bf2)
         # -- add + layernorm
-        ffn_residue = LNx + FFNx
-        Ot, self.stdev_Ot, self.gamma_Ot, self.avg_Ot = self.layernorm(residue=ffn_residue, alpha=Ot_alpha, beta=Ot_beta)
+        self.ffn_residue = self.LNx + FFNx
+        Ot, self.stdev_Ot, self.gamma_Ot, self.avg_Ot = self.layernorm(residue=self.ffn_residue, alpha=Ot_alpha, beta=Ot_beta)
         return Ot
 
     def forward_Y(self, Y_input, X_output, embed, inner_dim, WQ, WK, WV, WZ, MHA_alpha, MHA_beta):
-        Y = embed[Y_input] / np.sqrt(inner_dim) # n x d
-        Zy = self.positional_encode(Y)
-        MHAy = self.attention(Zy, WQ, WK, WV) @ WZ
-        mha_residue = MHAy + Y
-        Y2, self.stdev_Y2, self.gamma_Y2, self.avg_Y2 = self.layernorm(residue=mha_residue, alpha=MHA_alpha, beta=MHA_beta)
+        self.Y_inpt = embed[Y_input] / np.sqrt(inner_dim) # n x d
+        self.Zy = self.positional_encode(self.Y_inpt)
+        self.MHAy_concat = self.attention(self.Zy, WQ, WK, WV)
+        self.MHAy = self.MHAy_concat @ WZ
+        self.mha_residue_y = self.MHAy + self.Y_inpt
+        self.Y2, self.stdev_Y2, self.gamma_Y2, self.avg_Y2 = self.layernorm(residue=self.mha_residue_y, alpha=MHA_alpha, beta=MHA_beta)
 
         # cross attention
-        self.MHA_cross = self.cross_attention(Z=Y2, O=X_output, WQ=WQ, WK=WK, WV=WV) @ self.WyZ
+        self.MHA_cross_concat = self.cross_attention(Z=self.Y2, O=X_output, WQ=WQ, WK=WK, WV=WV)
+        self.MHA_cross = self.MHA_cross_concat @ self.WyZ
         # add + layernorm
-        self.OF_residue = self.MHA_cross + Y2
+        self.OF_residue = self.MHA_cross + self.Y2
         self.Y3, self.stdev_Y3, self.gamma_Y3, self.avg_Y3 = self.layernorm(residue=self.OF_residue, alpha=self.mha_cross_alpha, beta=self.mha_cross_beta)
         # feed-forward
         FFNy = self.ffn(self.Y3, W1=self.WYf1, W2=self.WYf2, B1=self.BYf1 , B2=self.BYf2)
@@ -120,7 +124,7 @@ class GPT():
 
     def full_forward(self):
         self.X_output = self.forward_X(X_input=self.X, embed=self.embed, inner_dim=self.inner_dim, WQ=self.WxQ, WK=self.WxK, WV=self.WxV, WZ=self.WxZ, MHA_alpha=self.MHA_alpha, MHA_beta=self.MHA_beta, Wf1=self.WXf1, Wf2=self.WXf2, Bf1=self.BXf1, Bf2=self.BXf2, Ot_alpha=self.Ot_alpha, Ot_beta=self.Ot_beta)
-        self.Y_output = self.forward_Y(Y_input=self.Y, X_output=self.X_output, embed=self.embed, inner_dim=self.inner_dim, WQ=self.WyQ, WK=self.WyK, WV=self.WyV, WZ=self.WyZ, MHA_alpha=self.mha_cross_alpha, MHA_beta=self.mha_cross_beta)
+        self.Y_output = self.forward_Y(Y_input=self.Y, X_output=self.X_output, embed=self.embed, inner_dim=self.inner_dim, WQ=self.WyQ, WK=self.WyK, WV=self.WyV, WZ=self.WYZ, MHA_alpha=self.mha_alpha_y, MHA_beta=self.mha_beta_y)
         self.logits = self.Y_output @ self.W_out + self.B_out
         self.prediction = self.softmax(self.logits)
         return self.prediction
@@ -134,8 +138,9 @@ class GPT():
         factor1 = dY # n,d
         factor2 = avg_d * sum_dY # n,1
         factor3 = avg_d * main_gamma * accum_gamma # nxd
-        return common_factor * (factor1 - factor2 - factor3) # n,d
-
+        dalpha = np.sum(dY * gamma, axis=0, keepdims=True)
+        dbeta = np.sum(dY, axis=0, keepdims=True)
+        return common_factor * (factor1 - factor2 - factor3), dalpha, dbeta # n,d
 
     def deriv_FFN(self, dY, X, W1, b1, W2):
         Z2 = np.tanh(X @ W1 + b1)    # n, d_hid       
@@ -156,6 +161,8 @@ class GPT():
         dY = np.reshape(dY, (len(dY), self.head_size, self.dk))
         dY = np.transpose(dY, (1, 0, 2))
         dWq, dWk, dWv = [], [], []
+        dX_total = np.zeros_like(X) # (n, d)
+        dO_total = np.zeros_like(O) 
         for head in range(self.head_size):
             Qx = X @ Wq[head]
             Kx = O @ Wk[head]
@@ -169,24 +176,68 @@ class GPT():
             dWq.append(dWq_head)
             dWk.append(dWk_head)
             dWv.append(dWv_head)
-            '''
-            dOt_head = dZ_dx @ ((Qx @ Wk[head].T) / np.sqrt(self.dk))
-            dY2_head = dZ_dx @ ((Kx @ Wq[head].T) / np.sqrt(self.dk))
-            dOt2 = (Z @ dY[head]) @ Wv[head].T
-            '''
-        return dWq, dWk, dWv #, dOt, dY2
+            dQ = dZ_dx @ Kx
+            dK = dZ_dx.T @ Qx
+            dV = Z.T @ dY[head]
+            dX_total += dQ @ Wq[head].T                  # (n, dk) @ (dk, d) --> (n, d)
+            dO_total += (dK @ Wk[head].T) + (dV @ Wv[head].T) # (n, d) + (n, d)
+        return dWq, dWk, dWv, dX_total, dO_total
     
+    def deriv_mha(self, dY, X, Wq, Wk, Wv):
+        dY = np.reshape(dY, (len(dY), self.head_size, self.dk))
+        dY = np.transpose(dY, (1, 0, 2))
+        dWq, dWk, dWv = [], [], []
+        dX_total = np.zeros_like(X) # (n, d)
+        for head in range(self.head_size):
+            Qx = X @ Wq[head]
+            Kx = X @ Wk[head]
+            Vx = X @ Wv[head]
+            Z = self.softmax((Qx @ Kx.T) / np.sqrt(self.dk))
+            dmha_dZ = dY[head] @ (Vx).T # n,d x d,dk --> n,dk x dk,n --> n,n
+            dZ_dx = self.deriv_softmax(dZ=dmha_dZ, Z=Z) / np.sqrt(self.dk)  # n,n
+            dQ = dZ_dx @ Kx
+            dK = dZ_dx.T @ Qx
+            dV = Z.T @ dY[head]
+            dWq.append(X.T @ dQ)
+            dWk.append(X.T @ dK)
+            dWv.append(X.T @ dV)
+            dX_total += (dQ @ Wq[head].T) + (dK @ Wk[head].T) + (dV @ Wv[head].T)                # (n, dk) @ (dk, d) --> (n, d)
+        return dWq, dWk, dWv, dX_total
+
+
     def backward(self): 
         d_logits = self.avg_dim * (self.prediction - np.eye(self.vocab_size)[self.Y])   # n,v
         dY_out = d_logits @ self.W_out.T    # n,v * v,d --> n,d
         dW_out = self.Y_output.T @ d_logits     # d,n x n,v --> d,v
         dB_out = np.sum(d_logits, axis=0, keepdims=True)    # n,v --> n,1
-        dzi_OF = self.deriv_layernorm(X=self.final_residue, dY=dY_out, stdev=self.stdev_OF, gamma=self.gamma_OF, alpha=self.Of_alpha, mu=self.avg_OF, avg_d=self.avg_dim)   # n,d
-        dW2_y3, db2_y3, dW1_y3, db1_y3, dY3 = self.deriv_FFN(dY=dzi_OF, X=self.Y3, W1=self.WYf1, b1=self.BYf1, W2=self.BYf2)
+        dzi_OF, dalpha_OF, dbeta_OF = self.deriv_layernorm(X=self.final_residue, dY=dY_out, stdev=self.stdev_OF, gamma=self.gamma_OF, alpha=self.Of_alpha, mu=self.avg_OF, avg_d=self.avg_dim)   # n,d
+        dW2_y3, db2_y3, dW1_y3, db1_y3, dY3 = self.deriv_FFN(dY=dzi_OF, X=self.Y3, W1=self.WYf1, b1=self.BYf1, W2=self.WYf2)
         dY3 += dzi_OF # this is due to the residual connection (Y3 + FFN) whose derivative was 1 w.r.t Y3 itself. Therefore adding both paths together gives (1+dFFN)*dY = dY + dFFN where dY = dzi_OF
-        dzi_Y3 = self.deriv_layernorm(X=self.OF_residue, dY=dY3, stdev=self.stdev_Y3, gamma=self.gamma_Y3, alpha=self.mha_cross_alpha, mu=self.avg_Y3, avg_d=self.avg_dim)   # n,d
-        dWYz = self.MHA_cross
-        dWq, dWk, dWv, dX, dY2 = self.deriv_cross_mha()
-        dY2 += dY3
-        return dW_out, dB_out, dzi_OF, dW1_y3, dW2_y3, db1_y3, db2_y3
+        dzi_Y3, dalpha_Y3, dbeta_Y3 = self.deriv_layernorm(X=self.OF_residue, dY=dY3, stdev=self.stdev_Y3, gamma=self.gamma_Y3, alpha=self.mha_cross_alpha, mu=self.avg_Y3, avg_d=self.avg_dim)   # n,d
+        dWYz = self.MHA_cross_concat.T @ dzi_Y3
+        dY_cross = dzi_Y3 @ self.WyZ.T
+        dWq_cross, dWk_cross, dWv_cross, dY2, dX = self.deriv_cross_mha(dY=dY_cross, X=self.Y2, O=self.X_output, Wq=self.WyQ, Wk=self.WyK, Wv=self.WyV)
+        dY2 += dzi_Y3
+
+        # PATH 1: Y2 --> encoder inception
+        dyi_Y1, dalpha_Y1, dbeta_Y1 = self.deriv_layernorm(X=self.mha_residue_y, dY=dY2, stdev=self.stdev_Y2, gamma=self.gamma_Y2, alpha=self.mha_alpha_y, mu=self.avg_Ot, avg_d=self.avg_dim)   # n,d 
+        dWyZ = self.MHAy_concat.T @ dyi_Y1
+        dY_mha = dyi_Y1 @ self.WYZ.T
+        dWq_mhay, dWk_mhay, dWv_mhay ,dY1 = self.deriv_mha(dY=dY_mha, X=self.Zy, Wq=self.WyQ, Wk=self.WyK, Wv=self.WyV)
+        dY1 += dyi_Y1
+        dembed_y = np.zeros_like(self.embed)
+        np.add.at(dembed_y, self.Y, dY1 / np.sqrt(self.inner_dim))
+
+        # PATH 2: dX --> decoder inception
+        dzi_Ot, dalpha_Ot, dbeta_Ot = self.deriv_layernorm(X=self.ffn_residue, dY=dX, stdev=self.stdev_Ot, gamma=self.gamma_Ot, alpha=self.Ot_alpha, mu=self.avg_Ot, avg_d=self.avg_dim)   # n,d 
+        dW2_x3, db2_x3, dW1_x3, db1_x3, dX3 = self.deriv_FFN(dY=dzi_Ot, X=self.LNx, W1=self.WXf1, b1=self.BXf1, W2=self.WXf2)
+        dX3 += dzi_Ot
+        dX2, dalpha_X2, dbeta_X2 = self.deriv_layernorm(X=self.mha_residue_x, dY=dX3, stdev=self.stdev_X, gamma=self.gamma_X, alpha=self.MHA_alpha, beta=self.MHA_beta, mu=self.avg_X, avg_d=self.avg_dim)
+        dWXz = self.MHAx_concat.T @ dX2
+        dX_mha = dX2 @ self.WxZ
+        dWq_mhax, dWk_mhax, dWv_mhax, dX1 = self.deriv_mha(dY=dX_mha, X=self.Zx, Wq=self.WxQ, Wk=self.WxK, Wv=self.WxV)
+        dX1 += dX2
+        dembed_x = np.zeros_like(self.embed)
+        np.add.at(dembed_x, self.X, dX1 / np.sqrt(self.inner_dim))
+        return dW_out, dB_out, dzi_OF, dW1_y3, dW2_y3, db1_y3, db2_y3, dWq_cross, dWk_cross, dWv_cross, dWYz, dalpha_OF, dbeta_OF, dalpha_Y3, dbeta_Y3, dalpha_Ot, dbeta_Ot, dW2_x3, db2_x3, dW1_x3, db1_x3, dalpha_X2, dbeta_X2, dWXz, dalpha_Y1, dbeta_Y1, dWyZ, dembed_x, dembed_y, dWq_mhax, dWk_mhax, dWv_mhax, dWq_mhay, dWk_mhay, dWv_mhay
         
